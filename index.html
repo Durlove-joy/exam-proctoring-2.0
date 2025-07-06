@@ -1,0 +1,133 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Online Exam Proctoring</title>
+  <link rel="stylesheet" href="style.css"/>
+</head>
+<body>
+  <div id="landing">
+    <h1>Welcome to the Online Exam</h1>
+    <button onclick="startCalibration()">Start Exam</button>
+  </div>
+
+  <div id="calibration" style="display: none;">
+    <h2>Calibration</h2>
+    <video id="webcam" autoplay playsinline></video>
+    <p>Follow the calibration dots at each corner of your screen.</p>
+    <div id="eye-status" style="margin: 0.5rem 0; font-weight: 500; color: #b91c1c;">Face not detected</div>
+    <button id="calibration-next" disabled>Next</button>
+  </div>
+
+  <div id="exam" style="display: none;">
+    <h2>Exam in Progress</h2>
+    <div id="timer">15:00</div>
+    <form id="examForm">
+      <div class="question-section">
+        <h3>Mathematics Section</h3>
+        
+        <label>1. What is 2 + 2?
+          <input type="text" name="q1" required />
+        </label>
+        
+        <label>2. Solve: 15 × 3 = ?
+          <input type="text" name="q2" required />
+        </label>
+        
+        <label>3. What is the square root of 64?
+          <input type="text" name="q3" required />
+        </label>
+      </div>
+
+      <div class="question-section">
+        <h3>Science Section</h3>
+        
+        <label>4. What is the chemical symbol for water?
+          <input type="text" name="q4" required />
+        </label>
+        
+        <label>5. How many planets are in our solar system?
+          <input type="text" name="q5" required />
+        </label>
+        
+        <label>6. What gas do plants absorb from the atmosphere during photosynthesis?
+          <input type="text" name="q6" required />
+        </label>
+      </div>
+
+      <div class="question-section">
+        <h3>General Knowledge</h3>
+        
+        <label>7. What is the capital of France?
+          <input type="text" name="q7" required />
+        </label>
+        
+        <label>8. Who wrote the play "Romeo and Juliet"?
+          <input type="text" name="q8" required />
+        </label>
+        
+        <label>9. In what year did World War II end?
+          <input type="text" name="q9" required />
+        </label>
+        
+        <label>10. What is the largest mammal in the world?
+          <input type="text" name="q10" required />
+        </label>
+      </div>
+
+      <div class="question-section">
+        <h3>Multiple Choice</h3>
+        
+        <div class="multiple-choice-question">
+          <p>11. Which programming language is known for web development?</p>
+          <label class="radio-label">
+            <input type="radio" name="q11" value="python" required />
+            Python
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="q11" value="javascript" required />
+            JavaScript
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="q11" value="c++" required />
+            C++
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="q11" value="java" required />
+            Java
+          </label>
+        </div>
+
+        <div class="multiple-choice-question">
+          <p>12. What does "HTML" stand for?</p>
+          <label class="radio-label">
+            <input type="radio" name="q12" value="hyper-text-markup-language" required />
+            HyperText Markup Language
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="q12" value="home-tool-markup-language" required />
+            Home Tool Markup Language
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="q12" value="hyperlinks-text-markup-language" required />
+            Hyperlinks Text Markup Language
+          </label>
+          <label class="radio-label">
+            <input type="radio" name="q12" value="hypermedia-text-markup-language" required />
+            Hypermedia Text Markup Language
+          </label>
+        </div>
+      </div>
+
+      <button type="submit">Submit Exam</button>
+    </form>
+  </div>
+
+  <!-- Tracking.js for simple face tracking -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/tracking-min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/data/face-min.js"></script>
+  
+  <script src="script.js"></script>
+</body>
+</html>
