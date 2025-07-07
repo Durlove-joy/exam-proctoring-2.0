@@ -1,3 +1,81 @@
+// --- Screen Share Detection & Notification ---
+function detectScreenShare() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) return;
+  // Try to detect if user starts screen sharing
+  navigator.mediaDevices.ondevicechange = async function() {
+    // This event fires when a new media device is available (e.g., screen share)
+    // Try to enumerate display media
+    try {
+      const displays = await navigator.mediaDevices.enumerateDevices();
+      const hasDisplay = displays.some(device => device.kind === 'videoinput' && device.label.toLowerCase().includes('screen'));
+      if (hasDisplay) {
+        showShortAlert(`Screen sharing detected! (${getCurrentExamTime()})`);
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+  };
+
+  // Also, try to detect if user tries to start screen sharing via getDisplayMedia
+  const origGetDisplayMedia = navigator.mediaDevices.getDisplayMedia;
+  navigator.mediaDevices.getDisplayMedia = async function(...args) {
+    showShortAlert(`Screen sharing started! (${getCurrentExamTime()})`);
+    return origGetDisplayMedia.apply(this, args);
+  };
+}
+// --- Voice Detection Alert (Web Audio API) ---
+let audioContext, analyser, microphone, javascriptNode;
+let voiceAlertShown = false;
+function startVoiceDetection() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+    audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    analyser = audioContext.createAnalyser();
+    microphone = audioContext.createMediaStreamSource(stream);
+    javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
+    analyser.smoothingTimeConstant = 0.8;
+    analyser.fftSize = 1024;
+    microphone.connect(analyser);
+    analyser.connect(javascriptNode);
+    javascriptNode.connect(audioContext.destination);
+    javascriptNode.onaudioprocess = function() {
+      let array = new Uint8Array(analyser.frequencyBinCount);
+      analyser.getByteFrequencyData(array);
+      let values = 0;
+      for (let i = 0; i < array.length; i++) { values += array[i]; }
+      let average = values / array.length;
+      // If average volume is above threshold, consider as voice detected
+      if (average > 25 && !voiceAlertShown) {
+        voiceAlertShown = true;
+        processVoiceViolation();
+        setTimeout(() => { voiceAlertShown = false; }, 5000);
+      }
+    };
+  }).catch(function(err) {
+    console.warn('Microphone access denied or unavailable.', err);
+  });
+}
+
+function processVoiceViolation() {
+  const currentTime = Date.now();
+  if (currentTime - monitoringData.lastAlertTime < MONITORING_CONFIG.ALERT_COOLDOWN) {
+    return;
+  }
+  monitoringData.violationTypes.voice_detected = (monitoringData.violationTypes.voice_detected || 0) + 1;
+  monitoringData.totalViolations++;
+  monitoringData.suspiciousEvents.push({
+    timestamp: currentTime,
+    violation: {
+      type: 'voice_detected',
+      severity: 'high',
+      message: 'Human voice detected! Please ensure a quiet environment.'
+    },
+    violationNumber: monitoringData.totalViolations
+  });
+  monitoringData.lastAlertTime = currentTime;
+  showShortAlert(`Voice detected! (${getCurrentExamTime()})`);
+  updateViolationDisplay();
+}
 // Elements
 const landing = document.getElementById("landing");
 const calibration = document.getElementById("calibration");
@@ -16,7 +94,7 @@ let currentFacePosition = null;
 let calibrationInterval = null;
 // Enhanced monitoring state variables
 let samplesCollected = 0;
-const SAMPLES_PER_POSITION = 10;
+const SAMPLES_PER_POSITION = 5;
 let activeCalibrationPoint = null;
 
 // Advanced monitoring state variables
@@ -85,7 +163,10 @@ function startCalibration() {
   isCalibrating = true;
   isExamActive = false;
   samplesCollected = 0;
-  
+
+  // Start voice detection when calibration begins
+  startVoiceDetection();
+
   // Create progress element
   const progressContainer = document.createElement('div');
   progressContainer.id = 'calibration-progress-container';
@@ -95,7 +176,7 @@ function startCalibration() {
     </div>
     <div id="calibration-counter">0/${SAMPLES_PER_POSITION}</div>
   `;
-  
+
   // Update instructions to be more clear
   const instructionText = document.querySelector("#calibration p");
   instructionText.innerHTML = `
@@ -104,16 +185,16 @@ function startCalibration() {
     The system will collect data while you're looking at each point.<br>
     Please keep your head relatively still during calibration.
   `;
-  
+
   // Add progress bar after instruction text
   instructionText.insertAdjacentElement('afterend', progressContainer);
-  
+
   // Add position indicator
   const positionIndicator = document.createElement('div');
   positionIndicator.id = 'position-indicator';
   positionIndicator.textContent = 'Looking at: TOP-LEFT';
   progressContainer.insertAdjacentElement('afterend', positionIndicator);
-  
+
   navigator.mediaDevices.getUserMedia({ video: true })
     .then((stream) => {
       webcam.srcObject = stream;
@@ -481,37 +562,77 @@ function processViolations(violations, currentTime) {
   if (currentTime - monitoringData.lastAlertTime < MONITORING_CONFIG.ALERT_COOLDOWN) {
     return;
   }
-  
+
   // Find highest severity violation
   const highSeverity = violations.find(v => v.severity === 'high');
   const violation = highSeverity || violations[0];
-  
+
   // Record violation by type
   monitoringData.violationTypes[violation.type]++;
   monitoringData.totalViolations++;
-  
+
   // Record violation details
   monitoringData.suspiciousEvents.push({
     timestamp: currentTime,
     violation: violation,
     violationNumber: monitoringData.totalViolations
   });
-  
-  // Show alert
+
+  // Show short alert (no popup)
   if (!window.eyeAlerted) {
     window.eyeAlerted = true;
     monitoringData.lastAlertTime = currentTime;
-    
-    const message = `Security Alert #${monitoringData.totalViolations}: ${violation.message}`;
-    alert(message);
-    
+
+    showShortAlert(`${violation.message} (${getCurrentExamTime()})`);
+
     console.log(`Violation #${monitoringData.totalViolations}:`, violation);
-    
+
     // Update display immediately
     updateViolationDisplay();
-    
+
     setTimeout(() => { window.eyeAlerted = false; }, 3000);
   }
+}
+// Show a short, non-intrusive alert at the top of the screen
+function showShortAlert(message) {
+  let alertDiv = document.getElementById('short-alert');
+  if (!alertDiv) {
+    alertDiv = document.createElement('div');
+    alertDiv.id = 'short-alert';
+    alertDiv.style.cssText = `
+      position: fixed;
+      top: 70px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #f87171;
+      color: #fff;
+      padding: 0.7rem 2rem;
+      border-radius: 8px;
+      font-size: 1.1rem;
+      font-weight: 600;
+      z-index: 9999;
+      box-shadow: 0 2px 12px rgba(99,102,241,0.12);
+      opacity: 0.98;
+      transition: opacity 0.3s;
+    `;
+    document.body.appendChild(alertDiv);
+  }
+  alertDiv.textContent = message;
+  alertDiv.style.display = 'block';
+  alertDiv.style.opacity = '0.98';
+  setTimeout(() => {
+    alertDiv.style.opacity = '0';
+    setTimeout(() => { alertDiv.style.display = 'none'; }, 400);
+  }, 2200);
+}
+
+// Get the current exam time as mm:ss
+function getCurrentExamTime() {
+  const timerElement = document.getElementById('timer');
+  if (timerElement && timerElement.textContent) {
+    return timerElement.textContent.trim();
+  }
+  return '--:--';
 }
 
 // Handle no face detected
@@ -550,9 +671,8 @@ function handleNoFaceDetected(eyeStatus, calBtn) {
     monitoringData.totalViolations++;
     
     const faceLostDuration = Math.round((Date.now() - faceLostStartTime) / 1000);
-    const message = `Security Alert #${monitoringData.totalViolations}: Face lost for ${faceLostDuration} seconds! Please ensure you remain visible to the camera.`;
-    alert(message);
-    
+    const message = `Face lost for ${faceLostDuration} seconds! Please ensure you remain visible to the camera. (${getCurrentExamTime()})`;
+    showShortAlert(message);
     // Record violation details
     monitoringData.suspiciousEvents.push({
       timestamp: Date.now(),
@@ -911,11 +1031,16 @@ function startExam() {
   isExamActive = true;
   startTimer();
   monitorTabSwitching();
-  
+
+  // Start voice detection when exam begins
+  startVoiceDetection();
+  // Start screen share detection when exam begins
+  detectScreenShare();
+
   // Generate calibration quality message
   const confidencePercentage = Math.round(eyeBoundary.confidence * 100);
   const qualityMessage = getCalibrationQualityMessage(eyeBoundary.confidence);
-  
+
   // Add enhanced monitoring message with detailed violation display
   const examMessage = document.createElement("div");
   examMessage.className = "exam-message";
@@ -925,10 +1050,11 @@ function startExam() {
     <p>✓ Eye movement and gaze tracking</p>
     <p>✓ Face position monitoring</p>
     <p>✓ Tab switching and window focus detection</p>
+    <p>✓ <span style="color:#f87171;">Voice detection active</span></p>
+    <p>✓ <span style="color:#fbbf24;">Screen share detection active</span></p>
     <div class="calibration-quality">
       <small>Calibration Quality: ${qualityMessage}</small>
     </div>
-    
     <div class="violation-summary">
       <div class="violation-header">Security Violations</div>
       <div class="violation-grid">
@@ -956,6 +1082,10 @@ function startExam() {
           <span class="violation-type">Face Lost:</span>
           <span class="violation-count" id="face-lost-count">0</span>
         </div>
+        <div class="violation-item">
+          <span class="violation-type">Voice Detected:</span>
+          <span class="violation-count" id="voice-detected-count">0</span>
+        </div>
       </div>
       <div class="total-violations">
         Total Violations: <span id="total-violations">0</span>
@@ -963,12 +1093,12 @@ function startExam() {
     </div>
   `;
   exam.insertBefore(examMessage, exam.firstChild.nextSibling);
-  
+
   // Show boundary visualization if debug mode is enabled
   if (SHOW_BOUNDARY_DEBUG) {
     setTimeout(() => visualizeBoundaries(true), 1000);
   }
-  
+
   // Start monitoring data display updates
   setInterval(updateViolationDisplay, 1000);
 }
@@ -983,19 +1113,20 @@ function updateViolationDisplay() {
       element.className = `violation-count ${count > 0 ? 'has-violations' : ''}`;
     }
   };
-  
+
   updateCount('boundary-count', monitoringData.violationTypes.boundary_violation);
   updateCount('movement-count', monitoringData.violationTypes.suspicious_movement);
   updateCount('glance-count', monitoringData.violationTypes.quick_glance);
   updateCount('tab-switch-count', monitoringData.violationTypes.tab_switch);
   updateCount('window-minimize-count', monitoringData.violationTypes.window_minimize);
   updateCount('face-lost-count', monitoringData.violationTypes.face_lost);
-  
+  updateCount('voice-detected-count', monitoringData.violationTypes.voice_detected || 0);
+
   // Update total violations
   const totalElement = document.getElementById('total-violations');
   if (totalElement) {
     totalElement.textContent = monitoringData.totalViolations;
-    
+
     // Change color based on total violation count
     if (monitoringData.totalViolations === 0) {
       totalElement.style.color = '#16a34a';
@@ -1069,9 +1200,8 @@ function monitorTabSwitching() {
           
           monitoringData.totalViolations++;
           
-          const message = `Security Alert #${monitoringData.totalViolations}: ${violationMessage}! This has been recorded.`;
-          alert(message);
-          
+          const message = `${violationMessage}! This has been recorded. (${getCurrentExamTime()})`;
+          showShortAlert(message);
           // Record violation details
           monitoringData.suspiciousEvents.push({
             timestamp: Date.now(),

@@ -5,10 +5,23 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
   <title>Online Exam Proctoring</title>
   <link rel="stylesheet" href="style.css"/>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@500;700&family=Roboto:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="icon" href="https://img.icons8.com/color/48/000000/graduation-cap.png"/>
 </head>
 <body>
+
+  <!-- Animated background shapes -->
+  <ul class="bg-edu-shapes">
+    <li></li><li></li><li></li><li></li><li></li>
+  </ul>
+
+
+  
+
   <div id="landing">
-    <h1>Welcome to the Online Exam</h1>
+    <h2 class="edu-sub">Your knowledge, your future!</h2>
     <button onclick="startCalibration()">Start Exam</button>
   </div>
 
@@ -120,6 +133,7 @@
         </div>
       </div>
 
+      <div class="edu-divider"></div>
       <button type="submit">Submit Exam</button>
     </form>
   </div>
@@ -129,5 +143,44 @@
   <script src="https://cdnjs.cloudflare.com/ajax/libs/tracking.js/1.1.3/data/face-min.js"></script>
   
   <script src="script.js"></script>
+  <script>
+    // Voice detection using Web Audio API
+    let audioContext, analyser, microphone, javascriptNode;
+    let voiceAlertShown = false;
+    function startVoiceDetection() {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+      navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+        audioContext = new (window.AudioContext || window.webkitAudioContext)();
+        analyser = audioContext.createAnalyser();
+        microphone = audioContext.createMediaStreamSource(stream);
+        javascriptNode = audioContext.createScriptProcessor(2048, 1, 1);
+        analyser.smoothingTimeConstant = 0.8;
+        analyser.fftSize = 1024;
+        microphone.connect(analyser);
+        analyser.connect(javascriptNode);
+        javascriptNode.connect(audioContext.destination);
+        javascriptNode.onaudioprocess = function() {
+          let array = new Uint8Array(analyser.frequencyBinCount);
+          analyser.getByteFrequencyData(array);
+          let values = 0;
+          for (let i = 0; i < array.length; i++) { values += array[i]; }
+          let average = values / array.length;
+          // If average volume is above threshold, consider as voice detected
+          if (average > 25 && !voiceAlertShown) {
+            voiceAlertShown = true;
+            alert('Voice detected! Please ensure a quiet environment.');
+            setTimeout(() => { voiceAlertShown = false; }, 5000);
+          }
+        };
+      }).catch(function(err) {
+        console.warn('Microphone access denied or unavailable.', err);
+      });
+    }
+    // Start voice detection when calibration or exam starts
+    window.addEventListener('DOMContentLoaded', function() {
+      document.querySelector('button[onclick="startCalibration()"]')?.addEventListener('click', startVoiceDetection);
+    });
+  </script>
+
 </body>
 </html>
