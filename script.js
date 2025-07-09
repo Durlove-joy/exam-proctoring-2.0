@@ -1,29 +1,402 @@
 // --- Screen Share Detection & Notification ---
+// --- Enhanced Screen Share & Display Duplication Detection ---
 function detectScreenShare() {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getDisplayMedia) return;
-  // Try to detect if user starts screen sharing
-  navigator.mediaDevices.ondevicechange = async function() {
-    // This event fires when a new media device is available (e.g., screen share)
-    // Try to enumerate display media
+  if (!navigator.mediaDevices) return;
+
+  // Helper: Check for multiple displays (hardware/projector/duplicate screen)
+  async function checkMultipleDisplays() {
     try {
-      const displays = await navigator.mediaDevices.enumerateDevices();
-      const hasDisplay = displays.some(device => device.kind === 'videoinput' && device.label.toLowerCase().includes('screen'));
-      if (hasDisplay) {
-        showShortAlert(`Screen sharing detected! (${getCurrentExamTime()})`);
+      // Try to use the Screen Enumeration API (if available)
+      if (navigator.getScreens) {
+        const screens = await navigator.getScreens();
+        if (screens && screens.screens && screens.screens.length > 1) {
+          showShortAlert(`Multiple screens detected! Please disconnect projectors/extra monitors. (${getCurrentExamTime()})`);
+          recordScreenShareViolation('hardware_duplicate');
+        }
+      } else if (window.screen && window.screen.width && window.screen.availWidth) {
+        // Fallback: Compare available width/height to screen width/height
+        if (window.screen.availWidth > window.screen.width + 10 || window.screen.availHeight > window.screen.height + 10) {
+          showShortAlert(`Possible screen duplication detected! (${getCurrentExamTime()})`);
+          recordScreenShareViolation('hardware_duplicate');
+        }
       }
     } catch (e) {
       // Ignore errors
     }
+  }
+
+  // Helper: Check for software-based screen sharing (getDisplayMedia, enumerateDevices)
+  async function checkSoftwareScreenShare() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      // Look for display media or virtual video devices
+      const suspicious = devices.some(device =>
+        (device.kind === 'videoinput' && /screen|virtual|display|capture|obs|ndi|vdo.ninja|remote|teams|zoom|meet|skype|webex|anydesk|splashtop|vnc|rdp/i.test(device.label))
+      );
+      if (suspicious) {
+        showShortAlert(`Suspicious video device (screen share/virtual camera) detected! (${getCurrentExamTime()})`);
+        recordScreenShareViolation('software_share');
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+  }
+
+  // Helper: Check for video call/remote desktop activity (extra audio/video devices, known labels, and Google Meet/Teams/Zoom tab sharing)
+  async function checkVideoCallOrRemoteDesktop() {
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      // Look for multiple audiooutput or videoinput devices with highly suspicious labels (stricter, less false positives)
+      const videoCallLike = devices.some(device =>
+        (device.kind === 'audiooutput' && /virtual|remote|teams|zoom|skype|webex|anydesk|splashtop|vnc|rdp/i.test(device.label)) ||
+        (device.kind === 'videoinput' && /teams|zoom|skype|webex|anydesk|splashtop|vnc|rdp|obs|ndi|vdo.ninja/i.test(device.label))
+      );
+      // Only flag tab sharing if a video call device is present and tab is not focused, or if the title/referrer is a known video call platform
+      let tabShareDetected = false;
+      // Try to detect if the document title or referrer contains known video call platforms (for Google Meet, Zoom, etc.)
+      const title = document.title.toLowerCase();
+      const referrer = document.referrer.toLowerCase();
+      const url = window.location.href.toLowerCase();
+      const videoCallKeywords = ['meet', 'zoom', 'teams', 'skype', 'webex', 'discord', 'google meet', 'microsoft teams'];
+      if (videoCallKeywords.some(k => title.includes(k) || referrer.includes(k) || url.includes(k))) {
+        tabShareDetected = true;
+      }
+      // If getDisplayMedia is in use (screen sharing API), flag as screen share
+      if (navigator.mediaDevices.getDisplayMedia && navigator.mediaDevices._screenShareActive) {
+        tabShareDetected = true;
+      }
+      if (videoCallLike || tabShareDetected) {
+        showShortAlert(`Possible video call, remote desktop, or tab sharing detected! (${getCurrentExamTime()})`);
+        recordScreenShareViolation('video_call_or_tab_share');
+      }
+    } catch (e) {
+      // Ignore errors
+    }
+  }
+
+  // Record violation in monitoringData
+  function recordScreenShareViolation(type) {
+    const currentTime = Date.now();
+    monitoringData.violationTypes.screen_share = (monitoringData.violationTypes.screen_share || 0) + 1;
+    monitoringData.totalViolations++;
+    monitoringData.suspiciousEvents.push({
+      timestamp: currentTime,
+      violation: {
+        type: 'screen_share',
+        severity: 'high',
+        message: `Screen sharing/duplication detected (${type})`
+      },
+      violationNumber: monitoringData.totalViolations
+    });
+    monitoringData.lastAlertTime = currentTime;
+    updateViolationDisplay();
+  }
+
+
+  // Listen for device changes (new display, projector, virtual device, etc.)
+  navigator.mediaDevices.ondevicechange = async function() {
+    await checkMultipleDisplays();
+    await checkSoftwareScreenShare();
+    await checkVideoCallOrRemoteDesktop();
   };
 
-  // Also, try to detect if user tries to start screen sharing via getDisplayMedia
-  const origGetDisplayMedia = navigator.mediaDevices.getDisplayMedia;
-  navigator.mediaDevices.getDisplayMedia = async function(...args) {
-    showShortAlert(`Screen sharing started! (${getCurrentExamTime()})`);
-    return origGetDisplayMedia.apply(this, args);
-  };
+  // --- Enhanced: Detect if user switches to/from a video call tab (Meet/Zoom/Teams/Discord/etc) ---
+  let lastTabTitle = document.title;
+  let lastTabUrl = window.location.href;
+  let lastTabHiddenTime = null;
+  let lastTabWasVideoCall = false;
+  const videoCallKeywords = ['meet', 'zoom', 'teams', 'skype', 'webex', 'discord', 'google meet', 'microsoft teams'];
+
+  document.addEventListener('visibilitychange', function() {
+    if (document.hidden) {
+      // Tab is being hidden (user switched away)
+      lastTabTitle = document.title.toLowerCase();
+      lastTabUrl = window.location.href.toLowerCase();
+      lastTabHiddenTime = Date.now();
+      lastTabWasVideoCall = videoCallKeywords.some(k => lastTabTitle.includes(k) || lastTabUrl.includes(k));
+    } else {
+      // Tab is visible again (user switched back)
+      const currentTitle = document.title.toLowerCase();
+      const currentUrl = window.location.href.toLowerCase();
+      const now = Date.now();
+      // If the previous tab was a video call, or the current tab is a video call, flag as suspicious
+      const nowIsVideoCall = videoCallKeywords.some(k => currentTitle.includes(k) || currentUrl.includes(k));
+      if ((lastTabWasVideoCall || nowIsVideoCall) && lastTabHiddenTime && (now - lastTabHiddenTime > 1000)) {
+        showShortAlert(`Possible tab switch to/from video call platform detected! (${getCurrentExamTime()})`);
+        recordScreenShareViolation('tab_switch_video_call');
+      }
+      // Reset
+      lastTabHiddenTime = null;
+      lastTabWasVideoCall = false;
+    }
+  });
+
+  // Patch getDisplayMedia to detect screen sharing start
+  if (navigator.mediaDevices.getDisplayMedia) {
+    const origGetDisplayMedia = navigator.mediaDevices.getDisplayMedia;
+    navigator.mediaDevices._screenShareActive = false;
+    navigator.mediaDevices.getDisplayMedia = async function(...args) {
+      navigator.mediaDevices._screenShareActive = true;
+      showShortAlert(`Screen sharing started! (${getCurrentExamTime()})`);
+      recordScreenShareViolation('getDisplayMedia');
+      try {
+        const stream = await origGetDisplayMedia.apply(this, args);
+        // Listen for screen share stop
+        if (stream && stream.getTracks) {
+          stream.getTracks().forEach(track => {
+            track.addEventListener('ended', () => {
+              navigator.mediaDevices._screenShareActive = false;
+            });
+          });
+        }
+        return stream;
+      } catch (e) {
+        navigator.mediaDevices._screenShareActive = false;
+        throw e;
+      }
+    };
+  }
+
+  // Initial checks at exam start
+  setTimeout(async () => {
+    await checkMultipleDisplays();
+    await checkSoftwareScreenShare();
+    await checkVideoCallOrRemoteDesktop();
+  }, 1000);
 }
 // --- Voice Detection Alert (Web Audio API) ---
+// --- Anti-Cheating: Clipboard, Context Menu, Shortcut Blocking, Fullscreen Enforcement, Randomized Questions ---
+function enableAntiCheatFeatures() {
+  // Clipboard Monitoring: Prevent copy, cut, paste
+  document.addEventListener('copy', function(e) {
+    e.preventDefault();
+    showShortAlert('Copying is disabled during the exam!');
+    logCheatViolation('clipboard_copy');
+  });
+  document.addEventListener('cut', function(e) {
+    e.preventDefault();
+    showShortAlert('Cutting is disabled during the exam!');
+    logCheatViolation('clipboard_cut');
+  });
+  document.addEventListener('paste', function(e) {
+    e.preventDefault();
+    showShortAlert('Pasting is disabled during the exam!');
+    logCheatViolation('clipboard_paste');
+  });
+
+  // Context Menu Blocking: Disable right-click
+  document.addEventListener('contextmenu', function(e) {
+    e.preventDefault();
+    showShortAlert('Right-click is disabled during the exam!');
+    logCheatViolation('context_menu');
+  });
+
+  // Keyboard Shortcut Blocking
+  document.addEventListener('keydown', function(e) {
+    // Block PrintScreen, Ctrl+Shift+I, Ctrl+Shift+C, Ctrl+U, Ctrl+T, Ctrl+N, Ctrl+W, F12, Alt+Tab, Ctrl+Tab, etc.
+    const forbidden = (
+      (e.ctrlKey && e.shiftKey && (e.key === 'I' || e.key === 'i' || e.key === 'C' || e.key === 'J')) ||
+      (e.ctrlKey && (e.key === 'U' || e.key === 'u' || e.key === 'T' || e.key === 't' || e.key === 'N' || e.key === 'n' || e.key === 'W' || e.key === 'w')) ||
+      (e.key === 'F12') ||
+      (e.key === 'PrintScreen') ||
+      (e.altKey && (e.key === 'Tab')) ||
+      (e.ctrlKey && e.key === 'Tab')
+    );
+    if (forbidden) {
+      e.preventDefault();
+      showShortAlert('This keyboard shortcut is disabled during the exam!');
+      logCheatViolation('keyboard_shortcut');
+    }
+  });
+
+  // Fullscreen Enforcement
+  function requestFullscreen() {
+    const el = document.documentElement;
+    if (el.requestFullscreen) el.requestFullscreen();
+    else if (el.mozRequestFullScreen) el.mozRequestFullScreen();
+    else if (el.webkitRequestFullscreen) el.webkitRequestFullscreen();
+    else if (el.msRequestFullscreen) el.msRequestFullscreen();
+  }
+  function isFullscreen() {
+    return document.fullscreenElement || document.webkitFullscreenElement || document.mozFullScreenElement || document.msFullscreenElement;
+  }
+  function enforceFullscreen() {
+    if (!isFullscreen()) {
+      showShortAlert('Exam must be in fullscreen! Please do not exit fullscreen.');
+      logCheatViolation('fullscreen_exit');
+      setTimeout(requestFullscreen, 500);
+    }
+  }
+  document.addEventListener('fullscreenchange', enforceFullscreen);
+  document.addEventListener('webkitfullscreenchange', enforceFullscreen);
+  document.addEventListener('mozfullscreenchange', enforceFullscreen);
+  document.addEventListener('msfullscreenchange', enforceFullscreen);
+
+  // Request fullscreen at exam start
+  setTimeout(requestFullscreen, 500);
+
+  // --- 1. Frequent Webcam Snapshots & Face Matching ---
+  let initialFaceImageData = null;
+  let webcamSnapshotInterval = null;
+  function captureWebcamSnapshot() {
+    const video = document.getElementById('webcam');
+    if (!video || video.readyState !== 4) return;
+    const canvas = document.createElement('canvas');
+    canvas.width = video.videoWidth;
+    canvas.height = video.videoHeight;
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+    return ctx.getImageData(0, 0, canvas.width, canvas.height);
+  }
+  function compareFaceSnapshots(img1, img2) {
+    // Simple pixel diff (not real face recognition, but detects major changes)
+    if (!img1 || !img2 || img1.width !== img2.width || img1.height !== img2.height) return false;
+    let diff = 0;
+    for (let i = 0; i < img1.data.length; i += 16) { // Sample every 4th pixel
+      diff += Math.abs(img1.data[i] - img2.data[i]);
+    }
+    return diff < 50000; // Threshold for major change
+  }
+  function takeInitialFaceSnapshot() {
+    setTimeout(() => {
+      initialFaceImageData = captureWebcamSnapshot();
+    }, 2000);
+  }
+  function startWebcamSnapshotMonitoring() {
+    webcamSnapshotInterval = setInterval(() => {
+      const current = captureWebcamSnapshot();
+      if (initialFaceImageData && current && !compareFaceSnapshots(initialFaceImageData, current)) {
+        showShortAlert('Face mismatch detected! Ensure only you are present.');
+        logCheatViolation('face_mismatch');
+      }
+    }, 20000); // Every 20 seconds
+  }
+
+  // --- 2. Idle Detection ---
+  let lastActivityTime = Date.now();
+  function resetIdleTimer() { lastActivityTime = Date.now(); }
+  ['mousemove', 'keydown', 'mousedown', 'touchstart'].forEach(evt => {
+    document.addEventListener(evt, resetIdleTimer, true);
+  });
+  setInterval(() => {
+    if (isExamActive && Date.now() - lastActivityTime > 60000) { // 1 minute idle
+      showShortAlert('You have been idle for too long!');
+      logCheatViolation('idle_timeout');
+    }
+  }, 15000);
+
+  // --- 3. Multiple Face Detection (simple, using tracking.js) ---
+  if (window.tracking && webcam) {
+    const tracker = new tracking.ObjectTracker('face');
+    tracker.setInitialScale(4);
+    tracker.setStepSize(2);
+    tracker.setEdgesDensity(0.1);
+    tracking.track(webcam, tracker);
+    tracker.on('track', function(event) {
+      if (isExamActive && event.data.length > 1) {
+        showShortAlert('Multiple faces detected! Only one person allowed.');
+        logCheatViolation('multiple_faces');
+      }
+    });
+  }
+
+  // --- 4. Network Monitoring ---
+  window.addEventListener('offline', () => {
+    showShortAlert('Network disconnected! Exam activity will be logged.');
+    logCheatViolation('network_offline');
+  });
+  window.addEventListener('online', () => {
+    showShortAlert('Network reconnected.');
+  });
+
+  // --- 5. Window Resize Detection ---
+  let lastWindowSize = { w: window.innerWidth, h: window.innerHeight };
+  window.addEventListener('resize', () => {
+    if (isExamActive && (Math.abs(window.innerWidth - lastWindowSize.w) > 30 || Math.abs(window.innerHeight - lastWindowSize.h) > 30)) {
+      showShortAlert('Window resize detected! Do not resize the exam window.');
+      logCheatViolation('window_resize');
+    }
+    lastWindowSize = { w: window.innerWidth, h: window.innerHeight };
+  });
+
+  // --- 6. Device Orientation Change (for mobile/tablet) ---
+  window.addEventListener('orientationchange', () => {
+    if (isExamActive) {
+      showShortAlert('Device orientation changed!');
+      logCheatViolation('orientation_change');
+    }
+  });
+
+  // --- 7. Audio Level Monitoring (background noise spike) ---
+  let lastAudioLevel = 0;
+  function monitorBackgroundAudio() {
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+    navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const analyser = ctx.createAnalyser();
+      const mic = ctx.createMediaStreamSource(stream);
+      analyser.fftSize = 1024;
+      mic.connect(analyser);
+      setInterval(() => {
+        let arr = new Uint8Array(analyser.frequencyBinCount);
+        analyser.getByteFrequencyData(arr);
+        let avg = arr.reduce((a, b) => a + b, 0) / arr.length;
+        if (isExamActive && avg > lastAudioLevel + 30 && avg > 40) {
+          showShortAlert('Background noise spike detected!');
+          logCheatViolation('audio_spike');
+        }
+        lastAudioLevel = avg;
+      }, 10000);
+    }).catch(() => {});
+  }
+
+  // Start all monitoring after exam begins
+  if (isExamActive) {
+    takeInitialFaceSnapshot();
+    startWebcamSnapshotMonitoring();
+    monitorBackgroundAudio();
+  } else {
+    // Wait for exam to start
+    const examStartInterval = setInterval(() => {
+      if (isExamActive) {
+        takeInitialFaceSnapshot();
+        startWebcamSnapshotMonitoring();
+        monitorBackgroundAudio();
+        clearInterval(examStartInterval);
+      }
+    }, 1000);
+  }
+}
+
+// Log cheat violation (for anti-cheat features)
+function logCheatViolation(type) {
+  const currentTime = Date.now();
+  monitoringData.violationTypes[type] = (monitoringData.violationTypes[type] || 0) + 1;
+  monitoringData.totalViolations++;
+  monitoringData.suspiciousEvents.push({
+    timestamp: currentTime,
+    violation: {
+      type: type,
+      severity: 'medium',
+      message: `Cheating attempt detected: ${type}`
+    },
+    violationNumber: monitoringData.totalViolations
+  });
+  monitoringData.lastAlertTime = currentTime;
+  updateViolationDisplay();
+}
+
+// --- Randomize Question Order ---
+function randomizeQuestions() {
+  // Assumes questions are in a container with id 'questions' and each question has class 'question'
+  const container = document.getElementById('questions');
+  if (!container) return;
+  const questions = Array.from(container.getElementsByClassName('question'));
+  for (let i = questions.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    container.insertBefore(questions[j], questions[i]);
+  }
+}
 let audioContext, analyser, microphone, javascriptNode;
 let voiceAlertShown = false;
 function startVoiceDetection() {
@@ -108,7 +481,9 @@ let monitoringData = {
     quick_glance: 0,
     tab_switch: 0,
     window_minimize: 0,
-    face_lost: 0
+    face_lost: 0,
+    voice_detected: 0,
+    screen_share: 0 // New: track screen share violations
   },
   totalViolations: 0,
   lastAlertTime: 0,
@@ -1037,6 +1412,12 @@ function startExam() {
   // Start screen share detection when exam begins
   detectScreenShare();
 
+  // Enable anti-cheat features (clipboard, context menu, shortcuts, fullscreen)
+  enableAntiCheatFeatures();
+
+  // Randomize question order
+  randomizeQuestions();
+
   // Generate calibration quality message
   const confidencePercentage = Math.round(eyeBoundary.confidence * 100);
   const qualityMessage = getCalibrationQualityMessage(eyeBoundary.confidence);
@@ -1086,6 +1467,10 @@ function startExam() {
           <span class="violation-type">Voice Detected:</span>
           <span class="violation-count" id="voice-detected-count">0</span>
         </div>
+        <div class="violation-item">
+          <span class="violation-type">Screen Share:</span>
+          <span class="violation-count" id="screen-share-count">0</span>
+        </div>
       </div>
       <div class="total-violations">
         Total Violations: <span id="total-violations">0</span>
@@ -1120,7 +1505,10 @@ function updateViolationDisplay() {
   updateCount('tab-switch-count', monitoringData.violationTypes.tab_switch);
   updateCount('window-minimize-count', monitoringData.violationTypes.window_minimize);
   updateCount('face-lost-count', monitoringData.violationTypes.face_lost);
+
   updateCount('voice-detected-count', monitoringData.violationTypes.voice_detected || 0);
+  updateCount('screen-share-count', monitoringData.violationTypes.screen_share || 0);
+  updateCount('screen-share-count', monitoringData.violationTypes.screen_share || 0);
 
   // Update total violations
   const totalElement = document.getElementById('total-violations');
@@ -1306,3 +1694,260 @@ function visualizeBoundaries(show = false) {
 
 // Enable boundary visualization for testing (set to true to see boundaries)
 const SHOW_BOUNDARY_DEBUG = false;
+
+// ================= GOOGLE DRIVE INTEGRATION =================
+// Google OAuth 2.0 Client ID
+const GOOGLE_CLIENT_ID = '743157069206-65ph65oblmk4853j0sss8997j9dq57nm.apps.googleusercontent.com';
+let googleAuthInstance = null;
+let googleDriveAccessToken = null;
+
+// Load Google API script dynamically
+function loadGoogleApiScript(callback) {
+  if (window.gapi) return callback();
+  const script = document.createElement('script');
+  script.src = 'https://apis.google.com/js/api.js';
+  script.onload = callback;
+  document.head.appendChild(script);
+}
+
+// Initialize Google Auth and prompt user for Drive access
+function initGoogleDriveAuth(onSuccess, onError) {
+  loadGoogleApiScript(() => {
+    window.gapi.load('client:auth2', async () => {
+      try {
+        await window.gapi.client.init({
+          clientId: GOOGLE_CLIENT_ID,
+          scope: 'https://www.googleapis.com/auth/drive.file',
+          discoveryDocs: ['https://www.googleapis.com/discovery/v1/apis/drive/v3/rest']
+        });
+        googleAuthInstance = window.gapi.auth2.getAuthInstance();
+        googleAuthInstance.signIn().then(user => {
+          googleDriveAccessToken = user.getAuthResponse().access_token;
+          if (onSuccess) onSuccess();
+        }, onError);
+      } catch (e) {
+        if (onError) onError(e);
+      }
+    });
+  });
+}
+
+// Upload a file (Blob or string) to Google Drive
+function uploadToGoogleDrive({name, mimeType, data, onProgress, onSuccess, onError}) {
+  if (!googleDriveAccessToken) return onError && onError('No Google Drive access token.');
+  const metadata = {
+    name: name,
+    mimeType: mimeType
+  };
+  const boundary = '-------314159265358979323846';
+  const delimiter = "\r\n--" + boundary + "\r\n";
+  const close_delim = "\r\n--" + boundary + "--";
+  let multipartRequestBody =
+    delimiter +
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+    JSON.stringify(metadata) +
+    delimiter +
+    'Content-Type: ' + mimeType + '\r\n\r\n' +
+    (data instanceof Blob ? '' : data) +
+    close_delim;
+  let body = data instanceof Blob ? null : multipartRequestBody;
+  let xhr = new XMLHttpRequest();
+  xhr.open('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart');
+  xhr.setRequestHeader('Authorization', 'Bearer ' + googleDriveAccessToken);
+  if (!(data instanceof Blob)) {
+    xhr.setRequestHeader('Content-Type', 'multipart/related; boundary=' + boundary);
+  }
+  xhr.upload && onProgress && (xhr.upload.onprogress = onProgress);
+  xhr.onload = function() {
+    if (xhr.status === 200) {
+      onSuccess && onSuccess(JSON.parse(xhr.responseText));
+    } else {
+      onError && onError(xhr.responseText);
+    }
+  };
+  xhr.onerror = function() { onError && onError(xhr.statusText); };
+  if (data instanceof Blob) {
+    // Use FormData for Blob
+    const form = new FormData();
+    form.append('metadata', new Blob([JSON.stringify(metadata)], {type: 'application/json'}));
+    form.append('file', data);
+    xhr.open('POST', 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart');
+    xhr.setRequestHeader('Authorization', 'Bearer ' + googleDriveAccessToken);
+    xhr.send(form);
+  } else {
+    xhr.send(multipartRequestBody);
+  }
+}
+
+// UI: Show upload status
+function showDriveUploadStatus(msg, isError = false) {
+  let statusDiv = document.getElementById('drive-upload-status');
+  if (!statusDiv) {
+    statusDiv = document.createElement('div');
+    statusDiv.id = 'drive-upload-status';
+    statusDiv.style.cssText = `
+      position: fixed; bottom: 20px; right: 20px; background: #fff; color: #222;
+      border: 1px solid #888; border-radius: 8px; padding: 0.7rem 1.5rem; z-index: 9999;
+      font-size: 1rem; box-shadow: 0 2px 12px rgba(99,102,241,0.12); opacity: 0.98; min-width: 220px;
+    `;
+    document.body.appendChild(statusDiv);
+  }
+  statusDiv.textContent = msg;
+  statusDiv.style.background = isError ? '#fee2e2' : '#e0f2fe';
+  statusDiv.style.color = isError ? '#b91c1c' : '#222';
+  statusDiv.style.display = 'block';
+  setTimeout(() => { statusDiv.style.display = 'none'; }, 4000);
+}
+
+// ================= END GOOGLE DRIVE INTEGRATION =================
+
+// ========== SESSION DATA CAPTURE & UPLOAD ========== 
+let sessionAudioChunks = [];
+let sessionAudioRecorder = null;
+let sessionVideoChunks = [];
+let sessionVideoRecorder = null;
+let sessionVideoStream = null;
+
+// Start recording audio (microphone)
+function startSessionAudioRecording() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  navigator.mediaDevices.getUserMedia({ audio: true }).then(function(stream) {
+    sessionAudioRecorder = new MediaRecorder(stream);
+    sessionAudioChunks = [];
+    sessionAudioRecorder.ondataavailable = function(e) {
+      if (e.data.size > 0) sessionAudioChunks.push(e.data);
+    };
+    sessionAudioRecorder.start();
+  });
+}
+
+// Start recording video (webcam)
+function startSessionVideoRecording() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return;
+  navigator.mediaDevices.getUserMedia({ video: true }).then(function(stream) {
+    sessionVideoStream = stream;
+    sessionVideoRecorder = new MediaRecorder(stream);
+    sessionVideoChunks = [];
+    sessionVideoRecorder.ondataavailable = function(e) {
+      if (e.data.size > 0) sessionVideoChunks.push(e.data);
+    };
+    sessionVideoRecorder.start();
+    // Attach to webcam element if not already
+    const video = document.getElementById('webcam');
+    if (video && !video.srcObject) video.srcObject = stream;
+  });
+}
+
+// Stop and upload all session data to Google Drive
+function stopAndUploadSessionData() {
+  // Stop audio
+  if (sessionAudioRecorder && sessionAudioRecorder.state !== 'inactive') sessionAudioRecorder.stop();
+  // Stop video
+  if (sessionVideoRecorder && sessionVideoRecorder.state !== 'inactive') sessionVideoRecorder.stop();
+  if (sessionVideoStream) {
+    sessionVideoStream.getTracks().forEach(track => track.stop());
+  }
+
+  // Upload audio
+  if (sessionAudioChunks.length > 0) {
+    const audioBlob = new Blob(sessionAudioChunks, { type: 'audio/webm' });
+    uploadToGoogleDrive({
+      name: `Exam_Audio_${new Date().toISOString()}.webm`,
+      mimeType: 'audio/webm',
+      data: audioBlob,
+      onSuccess: () => showDriveUploadStatus('Audio uploaded to Google Drive.'),
+      onError: (err) => showDriveUploadStatus('Audio upload failed: ' + err, true)
+    });
+  }
+  // Upload video
+  if (sessionVideoChunks.length > 0) {
+    const videoBlob = new Blob(sessionVideoChunks, { type: 'video/webm' });
+    uploadToGoogleDrive({
+      name: `Exam_Video_${new Date().toISOString()}.webm`,
+      mimeType: 'video/webm',
+      data: videoBlob,
+      onSuccess: () => showDriveUploadStatus('Video uploaded to Google Drive.'),
+      onError: (err) => showDriveUploadStatus('Video upload failed: ' + err, true)
+    });
+  }
+  // Upload alerts/logs
+  if (monitoringData && monitoringData.suspiciousEvents && monitoringData.suspiciousEvents.length > 0) {
+    const logStr = JSON.stringify(monitoringData, null, 2);
+    uploadToGoogleDrive({
+      name: `Exam_Alerts_${new Date().toISOString()}.json`,
+      mimeType: 'application/json',
+      data: logStr,
+      onSuccess: () => showDriveUploadStatus('Alerts/logs uploaded to Google Drive.'),
+      onError: (err) => showDriveUploadStatus('Log upload failed: ' + err, true)
+    });
+  }
+}
+
+// ========== HOOK INTO EXAM START/END ========== 
+// Prompt for Google Drive access and start session recording at exam start
+function startExamWithDrive() {
+  showDriveUploadStatus('Requesting Google Drive access...');
+  initGoogleDriveAuth(() => {
+    showDriveUploadStatus('Google Drive access granted. Recording session...');
+    startSessionAudioRecording();
+    startSessionVideoRecording();
+    startExam(); // Call the original exam start logic
+  }, (err) => {
+    showDriveUploadStatus('Google Drive access denied. Data will not be saved.', true);
+    startExam(); // Still start the exam, but without Drive upload
+  });
+}
+
+// At exam end, stop and upload session data
+function endExamWithDrive() {
+  stopAndUploadSessionData();
+}
+
+// ========== INTEGRATE WITH EXISTING UI ========== 
+// Replace startExam() call with startExamWithDrive() in finishCalibration
+// Replace exam end/submit logic to call endExamWithDrive()
+
+// Patch finishCalibration to use startExamWithDrive
+const originalFinishCalibration = finishCalibration;
+finishCalibration = function() {
+  if (calibrationInterval) clearInterval(calibrationInterval);
+  if (activeCalibrationPoint) {
+    document.body.removeChild(activeCalibrationPoint);
+    activeCalibrationPoint = null;
+  }
+  eyeBoundary = calculatePreciseBoundary(calibrationPositions);
+  monitoringData.calibrationComplete = true;
+  isCalibrating = false;
+  startExamWithDrive();
+};
+
+// Patch exam end (timer or manual submit)
+const originalStartTimer = startTimer;
+startTimer = function() {
+  const timerElement = document.getElementById("timer");
+  const interval = setInterval(() => {
+    const minutes = Math.floor(examDuration / 60);
+    const seconds = examDuration % 60;
+    timerElement.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+    examDuration--;
+    if (examDuration < 0) {
+      clearInterval(interval);
+      showDriveUploadStatus('Exam ended. Uploading session data...');
+      endExamWithDrive();
+      setTimeout(() => {
+        alert("Time's up! Submitting exam...");
+        document.getElementById("examForm").submit();
+      }, 2000);
+    }
+  }, 1000);
+};
+
+// If you have a manual submit button, patch it to call endExamWithDrive() before submit
+document.addEventListener('DOMContentLoaded', () => {
+  const examForm = document.getElementById('examForm');
+  if (examForm) {
+    examForm.addEventListener('submit', function(e) {
+      endExamWithDrive();
+    });
+  }
+});
