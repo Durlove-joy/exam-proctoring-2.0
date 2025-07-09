@@ -1724,8 +1724,18 @@ function initGoogleDriveAuth(onSuccess, onError) {
         googleAuthInstance.signIn().then(user => {
           googleDriveAccessToken = user.getAuthResponse().access_token;
           if (onSuccess) onSuccess();
-        }, onError);
+        }, err => {
+          // Show detailed error message in UI
+          let msg = 'Google Drive access denied.';
+          if (err && err.error) msg += ' Error: ' + err.error;
+          if (err && err.details) msg += ' Details: ' + err.details;
+          if (err && err.message) msg += ' Message: ' + err.message;
+          if (err && err.stack) msg += ' Stack: ' + err.stack;
+          showDriveUploadStatus(msg, true);
+          if (onError) onError(err);
+        });
       } catch (e) {
+        showDriveUploadStatus('Google API init error: ' + (e && e.message ? e.message : e), true);
         if (onError) onError(e);
       }
     });
