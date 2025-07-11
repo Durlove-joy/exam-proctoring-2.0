@@ -1400,36 +1400,29 @@ document.addEventListener("DOMContentLoaded", () => {
 });
 
 // Finish calibration -> start exam
-async function startExam() {
+function startExam() {
   calibration.style.display = "none";
   exam.style.display = "block";
   isExamActive = true;
   startTimer();
   monitorTabSwitching();
 
-  // --- GOOGLE DRIVE INTEGRATION ---
-  // 1. Load Google API client and authenticate
-  await loadGoogleApiAndAuth();
-
-  // 2. Start audio and video recording
-  startProctoringRecorders();
-
-  // 3. Start voice detection when exam begins
+  // Start voice detection when exam begins
   startVoiceDetection();
-  // 4. Start screen share detection when exam begins
+  // Start screen share detection when exam begins
   detectScreenShare();
 
-  // 5. Enable anti-cheat features (clipboard, context menu, shortcuts, fullscreen)
+  // Enable anti-cheat features (clipboard, context menu, shortcuts, fullscreen)
   enableAntiCheatFeatures();
 
-  // 6. Randomize question order
+  // Randomize question order
   randomizeQuestions();
 
-  // 7. Generate calibration quality message
+  // Generate calibration quality message
   const confidencePercentage = Math.round(eyeBoundary.confidence * 100);
   const qualityMessage = getCalibrationQualityMessage(eyeBoundary.confidence);
 
-  // 8. Add enhanced monitoring message with detailed violation display
+  // Add enhanced monitoring message with detailed violation display
   const examMessage = document.createElement("div");
   examMessage.className = "exam-message";
   examMessage.innerHTML = `
@@ -1543,135 +1536,9 @@ function startTimer() {
     examDuration--;
     if (examDuration < 0) {
       clearInterval(interval);
-      alert("Time's up! Submitting exam and uploading session data to Google Drive...");
-      await uploadProctoringSessionToDrive();
+      alert("Time's up! Submitting exam...");
       document.getElementById("examForm").submit();
     }
-// --- GOOGLE DRIVE INTEGRATION CODE ---
-// Google API client ID
-const GOOGLE_CLIENT_ID = '687381277163-71rae1h2r3s40jarps91o5itlr8ran33.apps.googleusercontent.com';
-const GOOGLE_SCOPES = 'https://www.googleapis.com/auth/drive.file';
-
-let gapiLoaded = false;
-let googleAuthInstance = null;
-let audioRecorder = null;
-let videoRecorder = null;
-let audioChunks = [];
-let videoChunks = [];
-let audioRecordingStream = null;
-let videoRecordingStream = null;
-
-// Load Google API and authenticate user
-async function loadGoogleApiAndAuth() {
-  return new Promise((resolve, reject) => {
-    if (gapiLoaded) {
-      doAuth().then(resolve).catch(reject);
-      return;
-    }
-    const script = document.createElement('script');
-    script.src = 'https://apis.google.com/js/api.js';
-    script.onload = () => {
-      gapi.load('client:auth2', async () => {
-        gapiLoaded = true;
-        try {
-          await gapi.client.init({
-            clientId: GOOGLE_CLIENT_ID,
-            scope: GOOGLE_SCOPES
-          });
-          doAuth().then(resolve).catch(reject);
-        } catch (e) {
-          alert('Failed to initialize Google API: ' + e.message);
-          reject(e);
-        }
-      });
-    };
-    script.onerror = reject;
-    document.head.appendChild(script);
-  });
-}
-
-async function doAuth() {
-  googleAuthInstance = gapi.auth2.getAuthInstance();
-  if (!googleAuthInstance.isSignedIn.get()) {
-    await googleAuthInstance.signIn();
-  }
-}
-
-// Start audio and video recorders
-function startProctoringRecorders() {
-  // Audio
-  navigator.mediaDevices.getUserMedia({ audio: true }).then(stream => {
-    audioRecordingStream = stream;
-    audioRecorder = new MediaRecorder(stream);
-    audioChunks = [];
-    audioRecorder.ondataavailable = e => { if (e.data.size > 0) audioChunks.push(e.data); };
-    audioRecorder.start();
-  }).catch(() => {
-    showShortAlert('Audio recording unavailable.');
-  });
-  // Video
-  navigator.mediaDevices.getUserMedia({ video: true }).then(stream => {
-    videoRecordingStream = stream;
-    videoRecorder = new MediaRecorder(stream);
-    videoChunks = [];
-    videoRecorder.ondataavailable = e => { if (e.data.size > 0) videoChunks.push(e.data); };
-    videoRecorder.start();
-  }).catch(() => {
-    showShortAlert('Webcam recording unavailable.');
-  });
-}
-
-// Stop recorders and upload all data to Google Drive
-async function uploadProctoringSessionToDrive() {
-  // Stop recorders
-  if (audioRecorder && audioRecorder.state !== 'inactive') audioRecorder.stop();
-  if (videoRecorder && videoRecorder.state !== 'inactive') videoRecorder.stop();
-  if (audioRecordingStream) audioRecordingStream.getTracks().forEach(t => t.stop());
-  if (videoRecordingStream) videoRecordingStream.getTracks().forEach(t => t.stop());
-
-  // Wait for data to be available
-  await new Promise(res => setTimeout(res, 1000));
-
-  // Prepare files
-  const audioBlob = audioChunks.length ? new Blob(audioChunks, { type: 'audio/webm' }) : null;
-  const videoBlob = videoChunks.length ? new Blob(videoChunks, { type: 'video/webm' }) : null;
-  const logBlob = new Blob([JSON.stringify(monitoringData, null, 2)], { type: 'application/json' });
-
-  // Upload files
-  let uploadStatus = '';
-  try {
-    if (audioBlob) {
-      await uploadFileToDrive(audioBlob, 'Exam_Audio_' + Date.now() + '.webm', 'audio/webm');
-      uploadStatus += 'Audio uploaded. ';
-    }
-    if (videoBlob) {
-      await uploadFileToDrive(videoBlob, 'Exam_Video_' + Date.now() + '.webm', 'video/webm');
-      uploadStatus += 'Video uploaded. ';
-    }
-    await uploadFileToDrive(logBlob, 'Exam_Alerts_' + Date.now() + '.json', 'application/json');
-    uploadStatus += 'Alert log uploaded.';
-    showShortAlert('Session data uploaded to Google Drive.');
-  } catch (e) {
-    showShortAlert('Upload to Google Drive failed: ' + e.message);
-  }
-}
-
-// Upload a file to Google Drive using gapi
-async function uploadFileToDrive(blob, name, mimeType) {
-  const metadata = {
-    name: name,
-    mimeType: mimeType
-  };
-  const accessToken = gapi.auth.getToken().access_token;
-  const form = new FormData();
-  form.append('metadata', new Blob([JSON.stringify(metadata)], { type: 'application/json' }));
-  form.append('file', blob);
-  await fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart&fields=id', {
-    method: 'POST',
-    headers: new Headers({ 'Authorization': 'Bearer ' + accessToken }),
-    body: form
-  });
-}
   }, 1000);
 }
 
@@ -1827,3 +1694,295 @@ function visualizeBoundaries(show = false) {
 
 // Enable boundary visualization for testing (set to true to see boundaries)
 const SHOW_BOUNDARY_DEBUG = false;
+
+// ================= GOOGLE DRIVE INTEGRATION =================
+// Replace with your actual client ID
+const GOOGLE_CLIENT_ID = '687381277163-71rae1h2r3s40jarps91o5itlr8ran33.apps.googleusercontent.com'; // <-- Replace with your client ID
+const GOOGLE_SCOPES = 'https://www.googleapis.com/auth/drive.file';
+
+let gapiLoaded = false;
+let googleAuthInstance = null;
+let driveAccessToken = null;
+
+// Load Google API JS client
+function loadGapiClient() {
+  return new Promise((resolve, reject) => {
+    if (gapiLoaded) return resolve();
+    const script = document.createElement('script');
+    script.src = 'https://apis.google.com/js/api.js';
+    script.onload = () => {
+      gapiLoaded = true;
+      resolve();
+    };
+    script.onerror = reject;
+    document.body.appendChild(script);
+  });
+}
+
+// Initialize Google Auth
+async function initGoogleAuth() {
+  await loadGapiClient();
+  return new Promise((resolve, reject) => {
+    window.gapi.load('client:auth2', async () => {
+      try {
+        await window.gapi.client.init({
+          clientId: GOOGLE_CLIENT_ID,
+          scope: GOOGLE_SCOPES
+        });
+        googleAuthInstance = window.gapi.auth2.getAuthInstance();
+        resolve();
+      } catch (e) {
+        reject(e);
+      }
+    });
+  });
+}
+
+// Prompt user to sign in and get access token
+async function getDriveAccessToken() {
+  await initGoogleAuth();
+  if (!googleAuthInstance.isSignedIn.get()) {
+    await googleAuthInstance.signIn();
+  }
+  const user = googleAuthInstance.currentUser.get();
+  const token = user.getAuthResponse().access_token;
+  driveAccessToken = token;
+  return token;
+}
+
+// Upload a file to Google Drive
+async function uploadFileToDrive({name, mimeType, data}) {
+  if (!driveAccessToken) await getDriveAccessToken();
+  const metadata = {
+    name,
+    mimeType
+  };
+  const boundary = '-------314159265358979323846';
+  const delimiter = "\r\n--" + boundary + "\r\n";
+  const close_delim = "\r\n--" + boundary + "--";
+  let multipartRequestBody =
+    delimiter +
+    'Content-Type: application/json; charset=UTF-8\r\n\r\n' +
+    JSON.stringify(metadata) +
+    delimiter +
+    'Content-Type: ' + mimeType + '\r\n\r\n' +
+    data +
+    close_delim;
+
+  return fetch('https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart', {
+    method: 'POST',
+    headers: {
+      'Authorization': 'Bearer ' + driveAccessToken,
+      'Content-Type': 'multipart/related; boundary=' + boundary
+    },
+    body: multipartRequestBody
+  }).then(res => res.json());
+}
+
+// ================== SESSION DATA CAPTURE ===================
+let mediaRecorder = null;
+let recordedBlobs = [];
+let audioRecorder = null;
+let audioBlobs = [];
+let driveUploadStatus = '';
+
+// Start recording webcam and mic
+async function startSessionRecording() {
+  // Webcam video
+  try {
+    const videoStream = await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
+    mediaRecorder = new MediaRecorder(videoStream, { mimeType: 'video/webm;codecs=vp8,opus' });
+    recordedBlobs = [];
+    mediaRecorder.ondataavailable = (e) => { if (e.data.size > 0) recordedBlobs.push(e.data); };
+    mediaRecorder.start();
+  } catch (e) {
+    console.warn('Webcam+mic recording failed:', e);
+  }
+  // Microphone only (for background audio, if needed)
+  try {
+    const audioStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    audioRecorder = new MediaRecorder(audioStream, { mimeType: 'audio/webm' });
+    audioBlobs = [];
+    audioRecorder.ondataavailable = (e) => { if (e.data.size > 0) audioBlobs.push(e.data); };
+    audioRecorder.start();
+  } catch (e) {
+    console.warn('Mic-only recording failed:', e);
+  }
+}
+
+// Stop all recordings
+function stopSessionRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+  if (audioRecorder && audioRecorder.state !== 'inactive') audioRecorder.stop();
+}
+
+// Save and upload all session data to Google Drive
+async function uploadSessionDataToDrive() {
+  driveUploadStatus = 'Uploading...';
+  updateDriveUploadStatus();
+  // 1. Upload video
+  if (recordedBlobs.length) {
+    const videoBlob = new Blob(recordedBlobs, { type: 'video/webm' });
+    await uploadFileToDrive({
+      name: `Exam_Video_${new Date().toISOString()}.webm`,
+      mimeType: 'video/webm',
+      data: await blobToBase64(videoBlob)
+    });
+  }
+  // 2. Upload audio
+  if (audioBlobs.length) {
+    const audioBlob = new Blob(audioBlobs, { type: 'audio/webm' });
+    await uploadFileToDrive({
+      name: `Exam_Audio_${new Date().toISOString()}.webm`,
+      mimeType: 'audio/webm',
+      data: await blobToBase64(audioBlob)
+    });
+  }
+  // 3. Upload alerts/logs
+  const logBlob = new Blob([JSON.stringify(monitoringData, null, 2)], { type: 'application/json' });
+  await uploadFileToDrive({
+    name: `Exam_Alerts_${new Date().toISOString()}.json`,
+    mimeType: 'application/json',
+    data: await blobToBase64(logBlob)
+  });
+  driveUploadStatus = 'Upload complete!';
+  updateDriveUploadStatus();
+}
+
+// Helper: Convert Blob to base64 for multipart upload
+function blobToBase64(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onloadend = () => {
+      // Remove the data:...;base64, prefix
+      const base64 = reader.result.split(',')[1];
+      resolve(atob(base64));
+    };
+    reader.onerror = reject;
+    reader.readAsDataURL(blob);
+  });
+}
+
+// UI: Show upload status
+function updateDriveUploadStatus() {
+  let statusDiv = document.getElementById('drive-upload-status');
+  if (!statusDiv) {
+    statusDiv = document.createElement('div');
+    statusDiv.id = 'drive-upload-status';
+    statusDiv.style.cssText = 'position:fixed;bottom:10px;right:10px;background:#fbbf24;color:#222;padding:8px 18px;border-radius:8px;z-index:9999;font-weight:600;box-shadow:0 2px 8px rgba(0,0,0,0.08);';
+    document.body.appendChild(statusDiv);
+  }
+  statusDiv.textContent = driveUploadStatus;
+  if (driveUploadStatus === 'Upload complete!') {
+    setTimeout(() => { statusDiv.style.display = 'none'; }, 4000);
+  } else {
+    statusDiv.style.display = 'block';
+  }
+}
+
+// ============= INTEGRATE WITH EXAM FLOW =============
+// Start Google Drive auth and session recording at exam start
+const _origStartExam = startExam;
+startExam = async function() {
+  // Show status UI
+  driveUploadStatus = 'Loading Google Drive integration...';
+  updateDriveUploadStatus();
+  // Ensure gapi is loaded before proceeding
+  let gapiTimeout;
+  let gapiLoadFailed = false;
+  try {
+    // Wait for gapi to load, but timeout after 15s
+    const gapiPromise = loadGapiClient();
+    const timeoutPromise = new Promise((_, reject) => {
+      gapiTimeout = setTimeout(() => {
+        gapiLoadFailed = true;
+        reject(new Error('Google API failed to load.'));
+      }, 15000);
+    });
+    await Promise.race([gapiPromise, timeoutPromise]);
+    clearTimeout(gapiTimeout);
+  } catch (e) {
+    driveUploadStatus = 'Google Drive integration failed to load.';
+    updateDriveUploadStatus();
+    showDriveRetryButton();
+    return;
+  }
+
+  // Prompt for Drive access with timeout and error handling
+  driveUploadStatus = 'Requesting Google Drive access...';
+  updateDriveUploadStatus();
+  let authTimeout;
+  let authFailed = false;
+  try {
+    const authPromise = getDriveAccessToken();
+    const timeoutPromise = new Promise((_, reject) => {
+      authTimeout = setTimeout(() => {
+        authFailed = true;
+        reject(new Error('Google Drive authentication timed out.'));
+      }, 15000);
+    });
+    await Promise.race([authPromise, timeoutPromise]);
+    clearTimeout(authTimeout);
+    driveUploadStatus = 'Google Drive access granted.';
+    updateDriveUploadStatus();
+  } catch (e) {
+    let errorMsg = 'Google Drive access denied or failed! Upload will not work.';
+    if (e && e.error) {
+      errorMsg += ` Reason: ${e.error}`;
+    } else if (e && e.message) {
+      errorMsg += ` Reason: ${e.message}`;
+    }
+    driveUploadStatus = errorMsg;
+    updateDriveUploadStatus();
+    showDriveRetryButton();
+    // Log the error to the console for debugging
+    console.error('Google Drive OAuth error:', e);
+    return;
+  }
+  // Start session recording
+  await startSessionRecording();
+  // Continue with normal exam start
+  _origStartExam.apply(this, arguments);
+};
+
+// Show a retry button if Drive auth fails
+function showDriveRetryButton() {
+  let statusDiv = document.getElementById('drive-upload-status');
+  if (!statusDiv) return;
+  let retryBtn = document.getElementById('drive-retry-btn');
+  if (!retryBtn) {
+    retryBtn = document.createElement('button');
+    retryBtn.id = 'drive-retry-btn';
+    retryBtn.textContent = 'Retry Google Drive Access';
+    retryBtn.style.cssText = 'margin-left:12px;padding:4px 12px;background:#f87171;color:#fff;border:none;border-radius:5px;cursor:pointer;font-weight:600;';
+    retryBtn.onclick = async function() {
+      retryBtn.disabled = true;
+      driveUploadStatus = 'Retrying Google Drive access...';
+      updateDriveUploadStatus();
+      // Remove button after click
+      retryBtn.remove();
+      // Try again
+      await startExam();
+    };
+    statusDiv.appendChild(retryBtn);
+  }
+}
+
+// Upload session data to Drive at exam end (when timer runs out)
+const _origStartTimer = startTimer;
+startTimer = function() {
+  const timerElement = document.getElementById("timer");
+  const interval = setInterval(() => {
+    const minutes = Math.floor(examDuration / 60);
+    const seconds = examDuration % 60;
+    timerElement.textContent = `${minutes}:${seconds < 10 ? '0' : ''}${seconds}`;
+    examDuration--;
+    if (examDuration < 0) {
+      clearInterval(interval);
+      stopSessionRecording();
+      uploadSessionDataToDrive();
+      alert("Time's up! Submitting exam and uploading session data...");
+      document.getElementById("examForm").submit();
+    }
+  }, 1000);
+};
